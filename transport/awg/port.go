@@ -13,7 +13,7 @@ import (
 )
 
 func (e *Endpoint) PortAddresses() (netip.Addr, netip.Addr) {
-	return e.tunDevice.Inet4Address(), e.tunDevice.Inet6Address()
+	return e.inet4Address, e.inet6Address
 }
 
 func (e *Endpoint) PortMTU() uint32 {

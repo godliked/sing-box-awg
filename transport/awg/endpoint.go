@@ -30,11 +30,15 @@ import (
 	"go4.org/netipx"
 )
 
+var systemInterfaceNameAccess sync.Mutex
+
 type Endpoint struct {
 	options       EndpointOptions
 	ipcConf       string
 	peers         []peerConfig
 	allowedIPs    *netipx.IPSet
+	inet4Address  netip.Addr
+	inet6Address  netip.Addr
 	tunDevice     Device
 	returnDevice  *returnDeviceWrapper
 	access        sync.Mutex
@@ -109,9 +113,50 @@ func NewEndpoint(options EndpointOptions) (*Endpoint, error) {
 	if err != nil {
 		return nil, err
 	}
+	if !options.System && !tun.WithGVisor {
+		_, err := newStackDevice(DeviceOptions{})
+		return nil, E.Cause(err, "create AmneziaWG device")
+	}
+	var inet4Address, inet6Address netip.Addr
+	seenAddresses := make(map[netip.Addr]bool)
+	for _, prefix := range options.Address {
+		if !prefix.IsValid() {
+			return nil, E.New("invalid AmneziaWG local address: ", prefix)
+		}
+		address := prefix.Addr()
+		if tun.WithGVisor && seenAddresses[address] {
+			return nil, E.New("duplicate AmneziaWG local address: ", address)
+		}
+		seenAddresses[address] = true
+		// The system device uses the first address per family. The stack
+		// device uses the last.
+		if address.Is4() {
+			if !options.System || !inet4Address.IsValid() {
+				inet4Address = address
+			}
+		} else if !options.System || !inet6Address.IsValid() {
+			inet6Address = address
+		}
+	}
+	return &Endpoint{
+		options:      options,
+		ipcConf:      ipcConf.String(),
+		peers:        peers,
+		allowedIPs:   allowedIPs,
+		inet4Address: inet4Address,
+		inet6Address: inet6Address,
+		returnDevice: &returnDeviceWrapper{},
+	}, nil
+}
+
+func (e *Endpoint) startTUN() error {
+	options := e.options
 	if options.System && options.Name == "" {
+		// Hold the lock until the interface is visible to the next AWG startup.
+		systemInterfaceNameAccess.Lock()
+		defer systemInterfaceNameAccess.Unlock()
 		options.Name = tun.CalculateInterfaceName("awg")
-		options.EgressPoolOptions.ExcludeInterface = options.Name
+		e.options.EgressPoolOptions.ExcludeInterface = options.Name
 	}
 	tunDevice, err := NewDevice(DeviceOptions{
 		Context:         options.Context,
@@ -128,19 +173,14 @@ func NewEndpoint(options EndpointOptions) (*Endpoint, error) {
 		Name:            options.Name,
 		MTU:             options.MTU,
 		Address:         options.Address,
-		AllowedAddress:  allowedIPs.Prefixes(),
+		AllowedAddress:  e.allowedIPs.Prefixes(),
 	})
 	if err != nil {
-		return nil, E.Cause(err, "create AmneziaWG device")
+		return E.Cause(err, "create AmneziaWG device")
 	}
-	return &Endpoint{
-		options:      options,
-		ipcConf:      ipcConf.String(),
-		peers:        peers,
-		allowedIPs:   allowedIPs,
-		tunDevice:    tunDevice,
-		returnDevice: &returnDeviceWrapper{Device: tunDevice},
-	}, nil
+	e.tunDevice = tunDevice
+	e.returnDevice.Device = tunDevice
+	return tunDevice.Start()
 }
 
 func (e *Endpoint) Start(postStart bool) error {
@@ -167,11 +207,11 @@ func (e *Endpoint) Start(postStart bool) error {
 		peer.writeConfig(&ipcConf)
 	}
 
-	bind := e.newBind()
-	if err := e.tunDevice.Start(); err != nil {
+	if err := e.startTUN(); err != nil {
 		_ = e.closeLocked()
 		return err
 	}
+	bind := e.newBind()
 	awgDevice := device.NewDevice(e.returnDevice, bind, &device.Logger{
 		Verbosef: func(format string, args ...any) {
 			e.options.Logger.Debug(fmt.Sprintf(strings.ToLower(format), args...))
@@ -246,8 +286,15 @@ func (e *Endpoint) newBind() conn.Bind {
 	if manager := service.FromContext[*powerreport.Manager](e.options.Context); manager != nil {
 		if recorder := manager.Recorder(); recorder != nil {
 			attribution := &powerreport.Attribution{Endpoint: e.options.Tag}
-			bind.onRead = func(size int) { recorder.Touch(powerreport.DirectionInbound, size, attribution) }
-			bind.onWrite = func(size int) { recorder.Touch(powerreport.DirectionOutbound, size, attribution) }
+			counter := recorder.TrafficCounter(powerreport.TrafficEndpoint, e.options.Tag)
+			bind.onRead = func(size int) {
+				counter.CountIn(int64(size))
+				recorder.Touch(powerreport.DirectionInbound, size, attribution)
+			}
+			bind.onWrite = func(size int) {
+				counter.CountOut(int64(size))
+				recorder.Touch(powerreport.DirectionOutbound, size, attribution)
+			}
 		}
 	}
 	return bind
@@ -306,12 +353,18 @@ func (e *Endpoint) DialContext(ctx context.Context, network string, destination 
 	if !destination.Addr.IsValid() {
 		return nil, E.Cause(os.ErrInvalid, "invalid non-IP destination")
 	}
+	if !e.ready.Load() {
+		return nil, E.New("AmneziaWG device is not ready")
+	}
 	return e.tunDevice.DialContext(ctx, network, destination)
 }
 
 func (e *Endpoint) ListenPacket(ctx context.Context, destination M.Socksaddr) (net.PacketConn, error) {
 	if !destination.Addr.IsValid() {
 		return nil, E.Cause(os.ErrInvalid, "invalid non-IP destination")
+	}
+	if !e.ready.Load() {
+		return nil, E.New("AmneziaWG device is not ready")
 	}
 	return e.tunDevice.ListenPacket(ctx, destination)
 }
@@ -342,7 +395,10 @@ func (e *Endpoint) closeLocked() error {
 	if e.egressPool != nil {
 		e.egressPool.Close()
 	}
-	return e.tunDevice.Close()
+	if e.tunDevice != nil {
+		return e.tunDevice.Close()
+	}
+	return nil
 }
 
 type peerConfig struct {
