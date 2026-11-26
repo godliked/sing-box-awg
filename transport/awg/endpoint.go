@@ -211,6 +211,7 @@ func (e *Endpoint) Start(postStart bool) error {
 		_ = e.closeLocked()
 		return err
 	}
+	e.pause = service.FromContext[pause.Manager](e.options.Context)
 	bind := e.newBind()
 	awgDevice := device.NewDevice(e.returnDevice, bind, &device.Logger{
 		Verbosef: func(format string, args ...any) {
@@ -221,33 +222,23 @@ func (e *Endpoint) Start(postStart bool) error {
 		},
 	})
 	e.device = awgDevice
-	if e.clientBind != nil && len(e.peers) == 1 && e.peers[0].destination.IsDomain() {
-		// Only DNS can move this connected detour. Queued packets from the old
-		// socket must not restore its address after a refresh.
+	if e.clientBind != nil {
+		// Keep configured peers on their connected detours. Peers without a
+		// configured address can still learn one from the packet listener.
 		awgDevice.DisableSomeRoamingForBrokenMobileSemantics()
 	}
 	if err := awgDevice.IpcSet(ipcConf.String()); err != nil {
 		_ = e.closeLocked()
 		return E.Cause(err, "configure AmneziaWG")
 	}
-	if err := awgDevice.Up(); err != nil {
-		_ = e.closeLocked()
-		return E.Cause(err, "start AmneziaWG")
-	}
-	e.pause = service.FromContext[pause.Manager](e.options.Context)
 	if e.pause != nil {
-		e.pauseCallback = e.pause.RegisterCallback(func(event int) {
-			var err error
-			switch event {
-			case pause.EventNetworkPause:
-				err = awgDevice.Down()
-			case pause.EventNetworkWake:
-				err = awgDevice.Up()
-			}
-			if err != nil {
-				e.options.Logger.Error(E.Cause(err, "update AmneziaWG network state"))
-			}
-		})
+		e.pauseCallback = e.pause.RegisterCallback(e.onPauseUpdated)
+	}
+	if e.pause == nil || !e.pause.IsNetworkPaused() {
+		if err := awgDevice.Up(); err != nil {
+			_ = e.closeLocked()
+			return E.Cause(err, "start AmneziaWG")
+		}
 	}
 	e.ready.Store(true)
 	return nil
@@ -256,15 +247,12 @@ func (e *Endpoint) Start(postStart bool) error {
 func (e *Endpoint) newBind() conn.Bind {
 	udpListener, isUDPListener := common.Cast[dialer.UDPListener](e.options.Dialer)
 	if !isUDPListener {
-		var connectAddress netip.AddrPort
-		if len(e.peers) == 1 {
-			connectAddress = e.peers[0].endpoint
-		}
 		e.clientBind = &clientBind{
-			ctx:            e.options.Context,
-			logger:         e.options.Logger,
-			dialer:         e.options.Dialer,
-			connectAddress: connectAddress,
+			ctx:          e.options.Context,
+			logger:       e.options.Logger,
+			dialer:       e.options.Dialer,
+			pauseManager: e.pause,
+			addresses:    e.detourAddresses(),
 		}
 		return e.clientBind
 	}
@@ -298,6 +286,10 @@ func (e *Endpoint) newBind() conn.Bind {
 		}
 	}
 	return bind
+}
+
+func (e *Endpoint) detourAddresses() []netip.AddrPort {
+	return common.Map(e.peers, func(peer peerConfig) netip.AddrPort { return peer.endpoint })
 }
 
 func (e *Endpoint) resolvePeer(ctx context.Context, destination M.Socksaddr, refresh bool) (netip.AddrPort, error) {
@@ -342,11 +334,38 @@ func (e *Endpoint) BindUpdate(ctx context.Context) error {
 			continue
 		}
 		peer.endpoint = endpoint
-		if e.clientBind != nil && len(e.peers) == 1 {
-			e.clientBind.setConnectAddress(endpoint)
-		}
+	}
+	if e.clientBind != nil {
+		e.clientBind.setAddresses(e.detourAddresses())
 	}
 	return errors.Join(append(refreshErrors, e.device.BindUpdate())...)
+}
+
+func (e *Endpoint) onPauseUpdated(event int) {
+	switch event {
+	case pause.EventDeviceWake, pause.EventNetworkPause, pause.EventNetworkWake:
+		go e.updatePauseState(event == pause.EventDeviceWake)
+	}
+}
+
+func (e *Endpoint) updatePauseState(deviceWake bool) {
+	e.access.Lock()
+	defer e.access.Unlock()
+	if e.device == nil {
+		return
+	}
+	// The AWG core does not count suspend time toward key expiry. Bringing
+	// it down on device wake clears the old keys and handshake state.
+	if deviceWake || e.pause.IsNetworkPaused() {
+		if err := e.device.Down(); err != nil {
+			e.options.Logger.Error(E.Cause(err, "pause AmneziaWG tunnel"))
+		}
+	}
+	if !e.pause.IsNetworkPaused() {
+		if err := e.device.Up(); err != nil {
+			e.options.Logger.Error(E.Cause(err, "resume AmneziaWG tunnel"))
+		}
+	}
 }
 
 func (e *Endpoint) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
