@@ -25,13 +25,13 @@ jobs:
           - { os: darwin, arch: arm64, runner: macos-15, cgo: '1' }
     steps:
       - name: Check out the tagged commit
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
-          go-version: 1.26.8
+          go-version: 1.27.4
       - name: Build and package
         id: package
         shell: bash
@@ -96,7 +96,7 @@ jobs:
           fi
           echo "archive=dist/$archive" >> "$GITHUB_OUTPUT"
       - name: Upload archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: awg-${{ matrix.os }}-${{ matrix.arch }}
           path: ${{ steps.package.outputs.archive }}
@@ -114,7 +114,7 @@ jobs:
       cancel-in-progress: false
     steps:
       - name: Download archives
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           pattern: awg-*
           path: dist
@@ -151,6 +151,7 @@ jobs:
               done
             fi
           else
-            gh release create "$tag" --verify-tag --title "sing-box-awg $tag" \
-              --notes "CLI builds with AmneziaWG endpoint support and NaiveProxy outbound." "${assets[@]}"
+            gh release create "$tag" --verify-tag --title "$tag" \
+              --notes $'CLI builds with AmneziaWG endpoint support.\n\nIf you want additional platforms to be included here, create an issue.' \
+              "${assets[@]}"
           fi
