@@ -16,8 +16,11 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/sagernet/gvisor/pkg/tcpip"
@@ -33,7 +36,9 @@ import (
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
 	"github.com/sagernet/sing/service"
+	"github.com/sagernet/sing/service/pause"
 
+	"github.com/amnezia-vpn/amneziawg-go/v3/device"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
@@ -43,6 +48,182 @@ import (
 func TestAWGLoopback(t *testing.T) {
 	t.Run("direct", func(t *testing.T) { exerciseLoopback(t, false, false) })
 	t.Run("detour", func(t *testing.T) { exerciseLoopback(t, false, true) })
+}
+
+func TestAWGMultiplePeersOverDestinationBoundDetour(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	clientKey, err := ecdh.X25519().GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	clientAddress := netip.MustParsePrefix("10.203.0.1/32")
+	serverAddresses := []netip.Prefix{netip.MustParsePrefix("10.203.0.2/32"), netip.MustParsePrefix("10.203.0.3/32")}
+	servers := make([]*Endpoint, 0, len(serverAddresses))
+	peers := make([]PeerOptions, 0, len(serverAddresses))
+	for _, address := range serverAddresses {
+		serverKey, err := ecdh.X25519().GenerateKey(rand.Reader)
+		require.NoError(t, err)
+		server, err := NewEndpoint(EndpointOptions{
+			Context: ctx, Logger: logger.NOP(), Dialer: &testUDPDialer{},
+			Address: []netip.Prefix{address}, PrivateKey: base64.StdEncoding.EncodeToString(serverKey.Bytes()),
+			Peers: []PeerOptions{{
+				PublicKey:  base64.StdEncoding.EncodeToString(clientKey.PublicKey().Bytes()),
+				AllowedIPs: []netip.Prefix{clientAddress},
+			}},
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, server.Close()) })
+		require.NoError(t, server.Start(false))
+		servers = append(servers, server)
+		peers = append(peers, PeerOptions{
+			Endpoint:   M.SocksaddrFrom(netip.MustParseAddr("127.0.0.1"), readAWGListenPort(t, server)),
+			PublicKey:  base64.StdEncoding.EncodeToString(serverKey.PublicKey().Bytes()),
+			AllowedIPs: []netip.Prefix{address},
+		})
+	}
+	resolvedAddress := peers[0].Endpoint.Addr
+	peers[0].Endpoint = M.ParseSocksaddrHostPort("awg.test", peers[0].Endpoint.Port)
+	detour := &testDestinationBoundDialer{destinations: make(chan netip.AddrPort, len(peers)*2)}
+	client, err := NewEndpoint(EndpointOptions{
+		Context: ctx, Logger: logger.NOP(), Dialer: detour,
+		Address: []netip.Prefix{clientAddress}, PrivateKey: base64.StdEncoding.EncodeToString(clientKey.Bytes()),
+		Peers: peers,
+		ResolvePeer: func(_ context.Context, domain string, _ bool) ([]netip.Addr, error) {
+			require.Equal(t, "awg.test", domain)
+			return []netip.Addr{resolvedAddress}, nil
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	require.NoError(t, client.Start(true))
+
+	checkTraffic := func() {
+		for i, server := range servers {
+			testDatagram(t, ctx, client, server, serverAddresses[i].Addr())
+		}
+		destinations := make([]netip.AddrPort, 0, len(peers))
+		for range peers {
+			select {
+			case destination := <-detour.destinations:
+				destinations = append(destinations, destination)
+			case <-ctx.Done():
+				t.Fatal("detour did not dial both peers: ", ctx.Err())
+			}
+		}
+		require.ElementsMatch(t, []netip.AddrPort{
+			netip.AddrPortFrom(resolvedAddress, peers[0].Endpoint.Port),
+			peers[1].Endpoint.AddrPort(),
+		}, destinations)
+	}
+	checkTraffic()
+	resolvedAddress = netip.MustParseAddr("127.0.0.2")
+	require.NoError(t, client.BindUpdate(ctx))
+	checkTraffic()
+}
+
+func TestAWGNetworkWakeDoesNotBlockPauseManager(t *testing.T) {
+	ctx := pause.WithDefaultManager(service.ContextWithDefaultRegistry(t.Context()))
+	pauseManager := service.FromContext[pause.Manager](ctx)
+	key, err := ecdh.X25519().GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	var blockOpen atomic.Bool
+	opening := make(chan struct{})
+	continueOpen := make(chan struct{})
+	resumeOpen := sync.OnceFunc(func() { close(continueOpen) })
+	endpoint, err := NewEndpoint(EndpointOptions{
+		Context: ctx, Logger: logger.NOP(),
+		Address:    []netip.Prefix{netip.MustParsePrefix("10.202.0.1/32")},
+		PrivateKey: base64.StdEncoding.EncodeToString(key.Bytes()),
+		Dialer: &testUDPDialer{control: func(string, string, syscall.RawConn) error {
+			if blockOpen.Swap(false) {
+				close(opening)
+				<-continueOpen
+			}
+			return nil
+		}},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, endpoint.Close()) })
+	defer resumeOpen()
+	pauseManager.DevicePause()
+	require.NoError(t, endpoint.Start(false))
+	bind := endpoint.device.Bind().(*standardBind)
+	isOpen := func() bool {
+		bind.access.Lock()
+		defer bind.access.Unlock()
+		return bind.ipv4 != nil || bind.ipv6 != nil
+	}
+	require.True(t, isOpen())
+	pauseManager.NetworkPause()
+	require.Eventually(t, func() bool { return !isOpen() }, 5*time.Second, time.Millisecond)
+	pauseManager.DeviceWake()
+	endpoint.updatePauseState(false)
+	require.False(t, isOpen())
+	blockOpen.Store(true)
+	woke := make(chan struct{})
+	go func() {
+		pauseManager.NetworkWake()
+		close(woke)
+	}()
+	select {
+	case <-opening:
+	case <-time.After(5 * time.Second):
+		t.Fatal("AWG did not reopen its bind")
+	}
+	select {
+	case <-woke:
+	case <-time.After(5 * time.Second):
+		t.Fatal("opening the AWG bind blocked the pause manager")
+	}
+	pauseManager.NetworkPause()
+	resumeOpen()
+	require.Eventually(t, func() bool { return !isOpen() }, 5*time.Second, time.Millisecond)
+	pauseManager.NetworkWake()
+	require.Eventually(t, isOpen, 5*time.Second, time.Millisecond)
+}
+
+func TestAWGDetourRetryWaitsForDeviceAndNetworkWake(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx := pause.WithDefaultManager(service.ContextWithDefaultRegistry(t.Context()))
+		manager := service.FromContext[pause.Manager](ctx)
+		bind := &clientBind{ctx: ctx, logger: logger.NOP(), pauseManager: manager, dialer: &testDestinationBoundDialer{}}
+		receive, _, err := bind.Open(0)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, bind.Close()) })
+
+		result := make(chan error, 1)
+		startReceive := func() {
+			go func() {
+				// The dialer rejects the packet listener, so no buffers are needed.
+				_, err := receive[0](nil, nil, nil)
+				result <- err
+			}()
+			synctest.Wait()
+		}
+		manager.DevicePause()
+		manager.NetworkPause()
+		startReceive()
+		time.Sleep(2 * time.Second)
+		synctest.Wait()
+		require.Empty(t, result)
+		manager.DeviceWake()
+		time.Sleep(2 * time.Second)
+		synctest.Wait()
+		require.Empty(t, result)
+		manager.NetworkWake()
+		synctest.Wait()
+		require.Len(t, result, 1)
+		require.NoError(t, <-result)
+
+		startReceive()
+		manager.DevicePause()
+		time.Sleep(2 * time.Second)
+		synctest.Wait()
+		require.Empty(t, result)
+		require.NoError(t, bind.Close())
+		synctest.Wait()
+		require.Len(t, result, 1)
+		require.ErrorIs(t, <-result, net.ErrClosed)
+	})
 }
 
 func TestAWGCloseBeforeStart(t *testing.T) {
@@ -243,7 +424,10 @@ func exerciseLoopback(t *testing.T, system, detour bool) {
 	}
 	var clientDialer N.Dialer = &testUDPDialer{}
 	var detourDialer *testDestinationBoundDialer
+	var pauseManager pause.Manager
 	if detour {
+		ctx = pause.WithDefaultManager(service.ContextWithDefaultRegistry(ctx))
+		pauseManager = service.FromContext[pause.Manager](ctx)
 		detourDialer = &testDestinationBoundDialer{destinations: make(chan netip.AddrPort, 4)}
 		clientDialer = detourDialer
 	}
@@ -295,6 +479,17 @@ func exerciseLoopback(t *testing.T, system, detour bool) {
 	testDatagram(t, ctx, client, server, serverAddresses[0].Addr())
 	if detour {
 		detourDialer.checkDestination(t, ctx, netip.AddrPortFrom(resolvedAddress, port))
+		handshake := readAWGLastHandshake(t, client)
+		// Let the peer's handshake rate limit elapse before triggering a new one.
+		time.Sleep(device.HandshakeInitationRate)
+		// Deliver both events before the asynchronous pause worker can run.
+		client.access.Lock()
+		pauseManager.DevicePause()
+		pauseManager.DeviceWake()
+		client.access.Unlock()
+		detourDialer.checkDestination(t, ctx, netip.AddrPortFrom(resolvedAddress, port))
+		testDatagram(t, ctx, client, server, serverAddresses[0].Addr())
+		require.True(t, readAWGLastHandshake(t, client).After(handshake))
 	}
 
 	returnPath := &testReturn{packets: make(chan []byte, 4)}
@@ -330,6 +525,24 @@ func readAWGListenPort(t *testing.T, endpoint *Endpoint) uint16 {
 	require.NoError(t, err)
 	return uint16(port)
 }
+
+func readAWGLastHandshake(t *testing.T, endpoint *Endpoint) time.Time {
+	t.Helper()
+	ipc, err := endpoint.device.IpcGet()
+	require.NoError(t, err)
+	_, fields, found := strings.Cut(ipc, "\nlast_handshake_time_sec=")
+	require.True(t, found)
+	secondsText, fields, found := strings.Cut(fields, "\nlast_handshake_time_nsec=")
+	require.True(t, found)
+	nanosecondsText, _, _ := strings.Cut(fields, "\n")
+	seconds, err := strconv.ParseInt(secondsText, 10, 64)
+	require.NoError(t, err)
+	require.Positive(t, seconds)
+	nanoseconds, err := strconv.ParseInt(nanosecondsText, 10, 64)
+	require.NoError(t, err)
+	return time.Unix(seconds, nanoseconds)
+}
+
 func testStream(t *testing.T, ctx context.Context, client, server *Endpoint, address netip.Addr) {
 	t.Helper()
 	listener, err := gonet.ListenTCP(server.tunDevice.(*stackDevice).stack, tcpip.FullAddress{

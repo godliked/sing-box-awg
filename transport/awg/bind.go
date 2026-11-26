@@ -232,11 +232,3 @@ func (*standardBind) ParseEndpoint(value string) (conn.Endpoint, error) {
 }
 
 func (*standardBind) BatchSize() int { return 1 }
-
-func parseBindEndpoint(value string) (conn.Endpoint, error) {
-	address, err := netip.ParseAddrPort(value)
-	if err != nil {
-		return nil, err
-	}
-	return &conn.StdNetEndpoint{AddrPort: address}, nil
-}
