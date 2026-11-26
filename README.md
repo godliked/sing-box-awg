@@ -1,8 +1,9 @@
-# sing-box
+# sing-box-awg
 
-The universal proxy platform.
+This fork of [SagerNet/sing-box](https://github.com/SagerNet/sing-box) adds [AmneziaWG endpoint support](docs/configuration/endpoint/awg.md). Download binaries from [GitHub Releases](https://github.com/godliked/sing-box-awg/releases).
 
-[![Packaging status](https://repology.org/badge/vertical-allrepos/sing-box.svg)](https://repology.org/project/sing-box/versions)
+- `custom/awg` is the stable default branch. Use `update/v1.15.0` for an upstream update and open a PR into `custom/awg`. Use `feature/<name>` for fork features.
+- Fetch original tags such as `v1.15.0` from the `upstream` remote. Push fork tags such as `v1.15.0-awg.1` and `v1.15.0-awg.2` from `custom/awg` to `origin` to publish releases.
 
 ## Documentation
 

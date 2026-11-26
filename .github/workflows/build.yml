@@ -43,6 +43,7 @@ concurrency:
 jobs:
   calculate_version:
     name: Calculate version
+    if: github.repository == 'SagerNet/sing-box'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.outputs.outputs.version }}
@@ -83,7 +84,7 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
   build:
     name: Build binary
-    if: github.event_name != 'workflow_dispatch' || inputs.build == 'All' || inputs.build == 'Binary'
+    if: github.repository == 'SagerNet/sing-box' && (github.event_name != 'workflow_dispatch' || inputs.build == 'All' || inputs.build == 'Binary')
     runs-on: ubuntu-26.04
     needs:
       - calculate_version
@@ -468,7 +469,7 @@ jobs:
           path: "dist"
   build_darwin:
     name: Build Darwin binaries
-    if: ${{ !failure() && !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.build == 'All' || inputs.build == 'Binary') }}
+    if: github.repository == 'SagerNet/sing-box' && (!failure() && !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.build == 'All' || inputs.build == 'Binary'))
     runs-on: macos-latest
     needs:
       - calculate_version
@@ -569,7 +570,7 @@ jobs:
           path: "dist"
   build_windows:
     name: Build Windows binaries
-    if: github.event_name != 'workflow_dispatch' || inputs.build == 'All' || inputs.build == 'Binary'
+    if: github.repository == 'SagerNet/sing-box' && (github.event_name != 'workflow_dispatch' || inputs.build == 'All' || inputs.build == 'Binary')
     runs-on: windows-latest
     needs:
       - calculate_version
@@ -670,7 +671,7 @@ jobs:
           path: "dist"
   build_android_library:
     name: Build Android library (${{ matrix.go_arch }})
-    if: (github.event_name != 'workflow_dispatch' || inputs.build == 'All' || inputs.build == 'Android' || inputs.build == 'publish-android') && github.ref != 'refs/heads/oldstable'
+    if: github.repository == 'SagerNet/sing-box' && ((github.event_name != 'workflow_dispatch' || inputs.build == 'All' || inputs.build == 'Android' || inputs.build == 'publish-android') && github.ref != 'refs/heads/oldstable')
     runs-on: ubuntu-latest
     needs:
       - calculate_version
@@ -729,7 +730,7 @@ jobs:
           compression-level: 0
   build_android:
     name: Build Android (${{ matrix.variant }})
-    if: (github.event_name != 'workflow_dispatch' || inputs.build == 'All' || inputs.build == 'Android') && github.ref != 'refs/heads/oldstable'
+    if: github.repository == 'SagerNet/sing-box' && ((github.event_name != 'workflow_dispatch' || inputs.build == 'All' || inputs.build == 'Android') && github.ref != 'refs/heads/oldstable')
     runs-on: ubuntu-latest
     needs:
       - calculate_version
@@ -847,7 +848,7 @@ jobs:
           path: 'dist'
   publish_android:
     name: Publish Android
-    if: github.event_name == 'workflow_dispatch' && inputs.build == 'publish-android' && (github.ref == 'refs/heads/stable' || github.ref == 'refs/heads/testing')
+    if: github.repository == 'SagerNet/sing-box' && (github.event_name == 'workflow_dispatch' && inputs.build == 'publish-android' && (github.ref == 'refs/heads/stable' || github.ref == 'refs/heads/testing'))
     runs-on: ubuntu-latest
     needs:
       - calculate_version
@@ -946,7 +947,7 @@ jobs:
           LOCAL_PROPERTIES: ${{ secrets.LOCAL_PROPERTIES }}
   build_windows_client:
     name: Build Windows client (${{ matrix.desktop_arch }})
-    if: (github.event_name != 'workflow_dispatch' || inputs.build == 'All' || inputs.build == 'Windows') && github.ref != 'refs/heads/oldstable'
+    if: github.repository == 'SagerNet/sing-box' && ((github.event_name != 'workflow_dispatch' || inputs.build == 'All' || inputs.build == 'Windows') && github.ref != 'refs/heads/oldstable')
     runs-on: windows-latest
     needs:
       - calculate_version
@@ -1059,7 +1060,7 @@ jobs:
           path: 'dist'
   build_linux_client:
     name: Build Linux client (${{ matrix.desktop_arch }})
-    if: (github.event_name != 'workflow_dispatch' || inputs.build == 'All' || inputs.build == 'Linux') && github.ref != 'refs/heads/oldstable'
+    if: github.repository == 'SagerNet/sing-box' && ((github.event_name != 'workflow_dispatch' || inputs.build == 'All' || inputs.build == 'Linux') && github.ref != 'refs/heads/oldstable')
     runs-on: ubuntu-26.04
     needs:
       - calculate_version
@@ -1215,7 +1216,7 @@ jobs:
   build_apple_library:
     name: Build Apple library (${{ matrix.artifact }})
     runs-on: ${{ matrix.build && 'xcode-27' || 'ubuntu-latest' }}
-    if: github.event_name != 'workflow_dispatch' || inputs.build == 'All' || inputs.build == 'Apple' || inputs.build == 'Apple-release' || inputs.build == 'iOS' || inputs.build == 'macOS' || inputs.build == 'tvOS' || inputs.build == 'macOS-standalone' || inputs.build == 'iOS-jailbreak'
+    if: github.repository == 'SagerNet/sing-box' && (github.event_name != 'workflow_dispatch' || inputs.build == 'All' || inputs.build == 'Apple' || inputs.build == 'Apple-release' || inputs.build == 'iOS' || inputs.build == 'macOS' || inputs.build == 'tvOS' || inputs.build == 'macOS-standalone' || inputs.build == 'iOS-jailbreak')
     needs:
       - calculate_version
     strategy:
@@ -1286,7 +1287,7 @@ jobs:
   build_apple:
     name: Build Apple release clients
     runs-on: ${{ matrix.if && 'xcode-27' || 'ubuntu-latest' }}
-    if: github.event_name != 'workflow_dispatch' || inputs.build == 'All' || inputs.build == 'Apple-release' || inputs.build == 'macOS-standalone' || inputs.build == 'iOS-jailbreak'
+    if: github.repository == 'SagerNet/sing-box' && (github.event_name != 'workflow_dispatch' || inputs.build == 'All' || inputs.build == 'Apple-release' || inputs.build == 'macOS-standalone' || inputs.build == 'iOS-jailbreak')
     needs:
       - calculate_version
       - build_apple_library
@@ -1617,7 +1618,7 @@ jobs:
   build_apple_app_store:
     name: Build Apple App Store clients
     runs-on: ${{ matrix.if && 'xcode-27' || 'ubuntu-latest' }}
-    if: github.event_name == 'workflow_dispatch' && (inputs.build == 'All' || inputs.build == 'Apple' || inputs.build == 'iOS' || inputs.build == 'macOS' || inputs.build == 'tvOS')
+    if: github.repository == 'SagerNet/sing-box' && (github.event_name == 'workflow_dispatch' && (inputs.build == 'All' || inputs.build == 'Apple' || inputs.build == 'iOS' || inputs.build == 'macOS' || inputs.build == 'tvOS'))
     needs:
       - calculate_version
       - build_apple_library
@@ -1664,7 +1665,7 @@ jobs:
     steps: *build_apple_steps
   upload:
     name: Upload builds
-    if: "!failure() && github.event_name == 'workflow_dispatch' && (inputs.build == 'All' || inputs.build == 'Binary' || inputs.build == 'Android' || inputs.build == 'Windows' || inputs.build == 'Linux' || inputs.build == 'Apple-release' || inputs.build == 'macOS-standalone' || inputs.build == 'iOS-jailbreak')"
+    if: github.repository == 'SagerNet/sing-box' && (!failure() && github.event_name == 'workflow_dispatch' && (inputs.build == 'All' || inputs.build == 'Binary' || inputs.build == 'Android' || inputs.build == 'Windows' || inputs.build == 'Linux' || inputs.build == 'Apple-release' || inputs.build == 'macOS-standalone' || inputs.build == 'iOS-jailbreak'))
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -1732,7 +1733,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   cache_gc:
     name: Cache GC
-    if: always()
+    if: github.repository == 'SagerNet/sing-box' && (always())
     runs-on: ubuntu-latest
     permissions:
       actions: write

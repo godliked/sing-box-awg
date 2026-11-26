@@ -25,6 +25,7 @@ concurrency:
 jobs:
   test:
     name: Test
+    if: github.repository == 'SagerNet/sing-box'
     strategy:
       fail-fast: false
       matrix:
