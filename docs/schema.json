@@ -3419,6 +3419,322 @@
           "type": "object",
           "properties": {
             "type": {
+              "const": "awg"
+            },
+            "tag": {
+              "type": "string"
+            },
+            "system": {
+              "type": "boolean"
+            },
+            "useIntegratedTun": {
+              "type": "boolean"
+            },
+            "name": {
+              "type": "string"
+            },
+            "mtu": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            "address": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            "private_key": {
+              "type": "string"
+            },
+            "listen_port": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535
+            },
+            "peers": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "address": {
+                    "type": "string"
+                  },
+                  "port": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 65535
+                  },
+                  "public_key": {
+                    "type": "string"
+                  },
+                  "pre_shared_key": {
+                    "type": "string"
+                  },
+                  "preshared_key": {
+                    "type": "string"
+                  },
+                  "allowed_ips": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    ]
+                  },
+                  "persistent_keepalive_interval": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 4294967295
+                      },
+                      {
+                        "type": "string",
+                        "pattern": "^(off|[0-9]+(-[0-9]+)?)$"
+                      }
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "udp_timeout": {
+              "$ref": "#/$defs/Duration"
+            },
+            "udp_mapping": {
+              "type": "string",
+              "enum": [
+                "",
+                "endpoint_independent",
+                "address_dependent",
+                "address_and_port_dependent"
+              ]
+            },
+            "udp_filtering": {
+              "type": "string",
+              "enum": [
+                "",
+                "endpoint_independent",
+                "address_dependent",
+                "address_and_port_dependent"
+              ]
+            },
+            "udp_nat_max": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            "jc": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            "jmin": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            "jmax": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            "s1": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535
+            },
+            "s2": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535
+            },
+            "s3": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535
+            },
+            "s4": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 65535
+            },
+            "h1": {
+              "type": "string"
+            },
+            "h2": {
+              "type": "string"
+            },
+            "h3": {
+              "type": "string"
+            },
+            "h4": {
+              "type": "string"
+            },
+            "i1": {
+              "type": "string"
+            },
+            "i2": {
+              "type": "string"
+            },
+            "i3": {
+              "type": "string"
+            },
+            "i4": {
+              "type": "string"
+            },
+            "i5": {
+              "type": "string"
+            },
+            "header_protection_key": {
+              "type": "string"
+            },
+            "content_padding_addition": {
+              "type": "string"
+            },
+            "rekey_after_time": {
+              "type": "string"
+            },
+            "rekey_timeout": {
+              "type": "string"
+            },
+            "reject_after_time": {
+              "type": "string"
+            },
+            "keepalive_timeout": {
+              "type": "string"
+            },
+            "max_handshake_attempts": {
+              "type": "string"
+            },
+            "random_trailers": {
+              "type": "boolean"
+            },
+            "disable_cookies": {
+              "type": "boolean"
+            },
+            "detour": {
+              "type": "string",
+              "x-tag-reference": "outbound"
+            },
+            "bind_interface": {
+              "type": "string"
+            },
+            "inet4_bind_address": {
+              "type": "string"
+            },
+            "inet6_bind_address": {
+              "type": "string"
+            },
+            "bind_address_no_port": {
+              "type": "boolean"
+            },
+            "protect_path": {
+              "type": "string"
+            },
+            "routing_mark": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4294967295
+                },
+                {
+                  "type": "string"
+                }
+              ]
+            },
+            "reuse_addr": {
+              "type": "boolean"
+            },
+            "netns": {
+              "type": "string",
+              "x-tag-reference": "network_namespace"
+            },
+            "connect_timeout": {
+              "$ref": "#/$defs/Duration"
+            },
+            "tcp_fast_open": {
+              "type": "boolean"
+            },
+            "tcp_multi_path": {
+              "type": "boolean"
+            },
+            "disable_tcp_keep_alive": {
+              "type": "boolean"
+            },
+            "tcp_keep_alive": {
+              "$ref": "#/$defs/Duration"
+            },
+            "tcp_keep_alive_interval": {
+              "$ref": "#/$defs/Duration"
+            },
+            "udp_fragment": {
+              "type": "boolean"
+            },
+            "domain_resolver": {
+              "$ref": "#/$defs/DomainResolver"
+            },
+            "network_strategy": {
+              "type": "string",
+              "enum": [
+                "default",
+                "fallback",
+                "hybrid"
+              ]
+            },
+            "network_type": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/InterfaceType"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/InterfaceType"
+                  }
+                }
+              ]
+            },
+            "fallback_network_type": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/InterfaceType"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/InterfaceType"
+                  }
+                }
+              ]
+            },
+            "fallback_delay": {
+              "$ref": "#/$defs/Duration"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
               "const": "openconnect"
             },
             "tag": {
