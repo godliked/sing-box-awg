@@ -45,6 +45,26 @@ func TestAWGLoopback(t *testing.T) {
 	t.Run("detour", func(t *testing.T) { exerciseLoopback(t, false, true) })
 }
 
+func TestAWGCloseBeforeStart(t *testing.T) {
+	address := netip.MustParsePrefix("10.202.0.1/32")
+	key, err := ecdh.X25519().GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	endpoint, err := NewEndpoint(EndpointOptions{
+		Context:    t.Context(),
+		Logger:     logger.NOP(),
+		Address:    []netip.Prefix{address},
+		PrivateKey: base64.StdEncoding.EncodeToString(key.Bytes()),
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, endpoint.Close()) })
+	require.Nil(t, endpoint.tunDevice)
+	inet4Address, inet6Address := endpoint.PortAddresses()
+	require.Equal(t, address.Addr(), inet4Address)
+	require.False(t, inet6Address.IsValid())
+	require.NoError(t, endpoint.Close())
+	require.ErrorIs(t, endpoint.Start(false), net.ErrClosed)
+}
+
 func TestAWGFixedListenPortAfterFailedRebind(t *testing.T) {
 	reserved, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	require.NoError(t, err)
@@ -140,6 +160,48 @@ func TestAWGSystemLoopback(t *testing.T) {
 	exerciseLoopback(t, true, false)
 }
 
+func TestAWGSystemAutomaticInterfaceNames(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Getenv("SING_BOX_TEST_AWG_SYSTEM_TUN") != "1" {
+		t.Skip("requires Linux with CAP_NET_ADMIN and SING_BOX_TEST_AWG_SYSTEM_TUN=1")
+	}
+	finder := control.NewDefaultInterfaceFinder()
+	ctx := service.ContextWithDefaultRegistry(t.Context())
+	ctx = service.ContextWith[adapter.NetworkManager](ctx, &testNetworkManager{finder: finder})
+	endpoints := make([]*Endpoint, 0, 2)
+	for _, address := range []string{"10.202.1.1/32", "10.202.1.2/32"} {
+		key, err := ecdh.X25519().GenerateKey(rand.Reader)
+		require.NoError(t, err)
+		endpoint, err := NewEndpoint(EndpointOptions{
+			Context:    ctx,
+			Logger:     logger.NOP(),
+			System:     true,
+			Address:    []netip.Prefix{netip.MustParsePrefix(address)},
+			PrivateKey: base64.StdEncoding.EncodeToString(key.Bytes()),
+			Dialer:     &testUDPDialer{},
+			CreateDialer: func(name string) N.Dialer {
+				return &testUDPDialer{control: control.BindToInterface(finder, name, -1)}
+			},
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, endpoint.Close()) })
+		endpoints = append(endpoints, endpoint)
+	}
+	startErrors := make(chan error, len(endpoints))
+	for _, endpoint := range endpoints {
+		go func() { startErrors <- endpoint.Start(false) }()
+	}
+	var startupErrors []error
+	for range endpoints {
+		startupErrors = append(startupErrors, <-startErrors)
+	}
+	require.NoError(t, errors.Join(startupErrors...))
+	firstName, err := endpoints[0].tunDevice.Name()
+	require.NoError(t, err)
+	secondName, err := endpoints[1].tunDevice.Name()
+	require.NoError(t, err)
+	require.NotEqual(t, firstName, secondName)
+}
+
 func exerciseLoopback(t *testing.T, system, detour bool) {
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
@@ -208,6 +270,7 @@ func exerciseLoopback(t *testing.T, system, detour bool) {
 	t.Cleanup(func() { require.NoError(t, client.Close()) })
 	require.NoError(t, client.Start(false))
 	require.Zero(t, resolveCalls)
+	require.Nil(t, client.tunDevice)
 	require.NoError(t, client.Start(true))
 	require.Equal(t, 1, resolveCalls)
 	require.True(t, client.PreferredAddress(serverAddresses[0].Addr()))

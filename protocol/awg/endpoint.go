@@ -16,7 +16,7 @@ import (
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing-box/transport/awg"
-	"github.com/sagernet/sing-tun"
+	tun "github.com/sagernet/sing-tun"
 	"github.com/sagernet/sing/common"
 	"github.com/sagernet/sing/common/bufio"
 	E "github.com/sagernet/sing/common/exceptions"
@@ -138,8 +138,10 @@ func NewEndpoint(ctx context.Context, router adapter.Router, logger log.ContextL
 	return ep, nil
 }
 
-func (w *Endpoint) Start(stage adapter.StartStage) error {
+func (w *Endpoint) Start(stage adapter.StartStage, scope *adapter.Scope) error {
 	switch stage {
+	case adapter.StartStateInitialize:
+		scope.Add(w.endpoint.Close)
 	case adapter.StartStateStart:
 		return w.endpoint.Start(false)
 	case adapter.StartStatePostStart:
@@ -148,15 +150,14 @@ func (w *Endpoint) Start(stage adapter.StartStage) error {
 			return err
 		}
 		w.started.Store(true)
+		scope.Add(func() error {
+			w.bindAccess.Lock()
+			w.started.Store(false)
+			w.bindAccess.Unlock()
+			return nil
+		})
 	}
 	return nil
-}
-
-func (w *Endpoint) Close() error {
-	w.bindAccess.Lock()
-	w.started.Store(false)
-	w.bindAccess.Unlock()
-	return w.endpoint.Close()
 }
 
 func (w *Endpoint) InterfaceUpdated(ctx context.Context) {
