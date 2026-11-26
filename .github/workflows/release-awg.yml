@@ -1,0 +1,156 @@
+name: Release AWG
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+-awg.[0-9]+'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}/${{ matrix.arch }}
+    if: github.repository == 'godliked/sing-box-awg' && github.event.created
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: linux, arch: amd64, runner: ubuntu-latest, cgo: '0' }
+          - { os: linux, arch: arm64, runner: ubuntu-latest, cgo: '0' }
+          - { os: windows, arch: amd64, runner: ubuntu-latest, cgo: '0' }
+          - { os: windows, arch: arm64, runner: ubuntu-latest, cgo: '0' }
+          - { os: darwin, arch: amd64, runner: macos-15-intel, cgo: '1' }
+          - { os: darwin, arch: arm64, runner: macos-15, cgo: '1' }
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 1.26.8
+      - name: Build and package
+        id: package
+        shell: bash
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: ${{ matrix.cgo }}
+          GOTOOLCHAIN: local
+        run: |
+          set -euo pipefail
+
+          version="${GITHUB_REF_NAME#v}"
+          name="sing-box-$version-$GOOS-$GOARCH"
+          package="dist/$name"
+          binary="sing-box"
+          cronet_library=""
+          case "$GOOS" in
+            linux)
+              tags="$(cat release/DEFAULT_BUILD_TAGS),with_purego"
+              cronet_library="libcronet.so"
+              ;;
+            windows)
+              tags="$(cat release/DEFAULT_BUILD_TAGS_WINDOWS)"
+              binary="sing-box.exe"
+              cronet_library="libcronet.dll"
+              ;;
+            darwin)
+              tags="$(cat release/DEFAULT_BUILD_TAGS)"
+              ;;
+          esac
+
+          for required_tag in with_awg with_gvisor with_naive_outbound; do
+            if [[ ",$tags," != *",$required_tag,"* ]]; then
+              echo "Missing required build tag $required_tag" >&2
+              exit 1
+            fi
+          done
+
+          mkdir -p "$package"
+          go build -mod=readonly -trimpath -tags "$tags" \
+            -ldflags "-X github.com/sagernet/sing-box/constant.Version=$version $(cat release/LDFLAGS) -s -w -buildid=" \
+            -o "$package/$binary" ./cmd/sing-box
+          cp LICENSE "$package/"
+
+          if [[ -n "$cronet_library" ]]; then
+            module="github.com/sagernet/cronet-go/lib/${GOOS}_${GOARCH}"
+            library_dir="$(go mod download -json "$module" | jq -er '.Dir')"
+            cp "$library_dir/$cronet_library" "$package/"
+          fi
+
+          if [[ "$GOOS/$GOARCH" == "$(go env GOHOSTOS)/$(go env GOHOSTARCH)" ]]; then
+            test "$("$package/$binary" version -n)" = "$version"
+          fi
+
+          cd dist
+          if [[ "$GOOS" == "windows" ]]; then
+            archive="$name.zip"
+            zip -qr "$archive" "$name"
+          else
+            archive="$name.tar.gz"
+            tar -czf "$archive" "$name"
+          fi
+          echo "archive=dist/$archive" >> "$GITHUB_OUTPUT"
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: awg-${{ matrix.os }}-${{ matrix.arch }}
+          path: ${{ steps.package.outputs.archive }}
+          if-no-files-found: error
+          compression-level: 0
+
+  publish:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: awg-release-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - name: Download archives
+        uses: actions/download-artifact@v5
+        with:
+          pattern: awg-*
+          path: dist
+          merge-multiple: true
+      - name: Publish archives and checksums
+        shell: bash
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          tag="$GITHUB_REF_NAME"
+          version="${tag#v}"
+          archives=(
+            "sing-box-$version-"linux-{amd64,arm64}.tar.gz
+            "sing-box-$version-"darwin-{amd64,arm64}.tar.gz
+            "sing-box-$version-"windows-{amd64,arm64}.zip
+          )
+          sha256sum "${archives[@]}" > SHA256SUMS
+          assets=("${archives[@]}" SHA256SUMS)
+
+          if release="$(gh release view "$tag" --json isDraft,assets)"; then
+            if jq -e '.isDraft' <<< "$release" > /dev/null; then
+              gh release upload "$tag" --clobber "${assets[@]}"
+              gh release edit "$tag" --draft=false --verify-tag
+            else
+              for asset in "${assets[@]}"; do
+                if ! jq -e --arg name "$asset" 'any(.assets[]; .name == $name and .size > 0)' <<< "$release" > /dev/null; then
+                  echo "Published release $tag is missing $asset" >&2
+                  exit 1
+                fi
+              done
+            fi
+          else
+            gh release create "$tag" --verify-tag --title "sing-box-awg $tag" \
+              --notes "CLI builds with AmneziaWG endpoint support and NaiveProxy outbound." "${assets[@]}"
+          fi
