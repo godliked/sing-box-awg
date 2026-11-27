@@ -222,11 +222,6 @@ func (e *Endpoint) Start(postStart bool) error {
 		},
 	})
 	e.device = awgDevice
-	if e.clientBind != nil {
-		// Keep configured peers on their connected detours. Peers without a
-		// configured address can still learn one from the packet listener.
-		awgDevice.DisableSomeRoamingForBrokenMobileSemantics()
-	}
 	if err := awgDevice.IpcSet(ipcConf.String()); err != nil {
 		_ = e.closeLocked()
 		return E.Cause(err, "configure AmneziaWG")
@@ -248,11 +243,10 @@ func (e *Endpoint) newBind() conn.Bind {
 	udpListener, isUDPListener := common.Cast[dialer.UDPListener](e.options.Dialer)
 	if !isUDPListener {
 		e.clientBind = &clientBind{
-			ctx:          e.options.Context,
-			logger:       e.options.Logger,
-			dialer:       e.options.Dialer,
-			pauseManager: e.pause,
-			addresses:    e.detourAddresses(),
+			ctx:       e.options.Context,
+			logger:    e.options.Logger,
+			dialer:    e.options.Dialer,
+			addresses: e.detourAddresses(),
 		}
 		return e.clientBind
 	}

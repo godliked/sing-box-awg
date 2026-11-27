@@ -181,11 +181,11 @@ func TestAWGNetworkWakeDoesNotBlockPauseManager(t *testing.T) {
 	require.Eventually(t, isOpen, 5*time.Second, time.Millisecond)
 }
 
-func TestAWGDetourRetryWaitsForDeviceAndNetworkWake(t *testing.T) {
+func TestAWGDetourRetryDoesNotWaitForDeviceWake(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ctx := pause.WithDefaultManager(service.ContextWithDefaultRegistry(t.Context()))
 		manager := service.FromContext[pause.Manager](ctx)
-		bind := &clientBind{ctx: ctx, logger: logger.NOP(), pauseManager: manager, dialer: &testDestinationBoundDialer{}}
+		bind := &clientBind{ctx: ctx, logger: logger.NOP(), dialer: &testDestinationBoundDialer{}}
 		receive, _, err := bind.Open(0)
 		require.NoError(t, err)
 		t.Cleanup(func() { require.NoError(t, bind.Close()) })
@@ -200,24 +200,14 @@ func TestAWGDetourRetryWaitsForDeviceAndNetworkWake(t *testing.T) {
 			synctest.Wait()
 		}
 		manager.DevicePause()
-		manager.NetworkPause()
 		startReceive()
-		time.Sleep(2 * time.Second)
-		synctest.Wait()
 		require.Empty(t, result)
-		manager.DeviceWake()
-		time.Sleep(2 * time.Second)
-		synctest.Wait()
-		require.Empty(t, result)
-		manager.NetworkWake()
+		time.Sleep(time.Second)
 		synctest.Wait()
 		require.Len(t, result, 1)
 		require.NoError(t, <-result)
 
 		startReceive()
-		manager.DevicePause()
-		time.Sleep(2 * time.Second)
-		synctest.Wait()
 		require.Empty(t, result)
 		require.NoError(t, bind.Close())
 		synctest.Wait()
