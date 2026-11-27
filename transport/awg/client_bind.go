@@ -2,6 +2,7 @@ package awg
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/netip"
 	"sync"
@@ -12,7 +13,6 @@ import (
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
-	"github.com/sagernet/sing/service/pause"
 
 	"github.com/amnezia-vpn/amneziawg-go/v3/conn"
 )
@@ -20,13 +20,12 @@ import (
 var _ conn.Bind = (*clientBind)(nil)
 
 type clientBind struct {
-	ctx          context.Context
-	logger       logger.Logger
-	dialer       N.Dialer
-	pauseManager pause.Manager
-	access       sync.Mutex
-	addresses    []netip.AddrPort
-	session      *clientBindSession
+	ctx       context.Context
+	logger    logger.Logger
+	dialer    N.Dialer
+	access    sync.Mutex
+	addresses []netip.AddrPort
+	session   *clientBindSession
 }
 
 type clientBindSession struct {
@@ -47,7 +46,7 @@ type clientSocket struct {
 
 type clientEndpoint struct {
 	conn.StdNetEndpoint
-	fromListener bool
+	bindAddress netip.AddrPort
 }
 
 func (c *clientBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
@@ -99,19 +98,21 @@ func (c *clientBind) connect(ctx context.Context, destination *clientBindDestina
 	if destination.socket != nil {
 		return destination.socket, nil
 	}
-	var socket net.PacketConn
+	address := M.Socksaddr{Addr: netip.IPv4Unspecified()}
 	if destination.address.IsValid() {
-		udpConn, err := c.dialer.DialContext(ctx, N.NetworkUDP, M.SocksaddrFromNetIP(destination.address))
-		if err != nil {
-			return nil, err
+		address = M.SocksaddrFromNetIP(destination.address)
+	}
+	socket, listenErr := c.dialer.ListenPacket(ctx, address)
+	if listenErr != nil {
+		if !destination.address.IsValid() || ctx.Err() != nil {
+			return nil, listenErr
 		}
-		socket = bufio.NewUnbindPacketConn(udpConn)
-	} else {
-		udpConn, err := c.dialer.ListenPacket(ctx, M.Socksaddr{Addr: netip.IPv4Unspecified()})
-		if err != nil {
-			return nil, err
+		udpConn, dialErr := c.dialer.DialContext(ctx, N.NetworkUDP, address)
+		if dialErr != nil {
+			return nil, errors.Join(listenErr, dialErr)
 		}
-		socket = udpConn
+		// Detours that require connected UDP may expose a different remote address.
+		socket = bufio.NewUnbindPacketConnWithAddr(udpConn, address)
 	}
 	destination.socket = &clientSocket{PacketConn: socket}
 	return destination.socket, nil
@@ -122,17 +123,14 @@ func (c *clientBind) receive(ctx context.Context, destination *clientBindDestina
 	if err == nil {
 		size, source, readErr := socket.ReadFrom(packets[0])
 		if readErr == nil {
-			address := destination.address
-			if !address.IsValid() {
-				address = M.SocksaddrFromNet(source).Unwrap().AddrPort()
-			}
+			address := M.SocksaddrFromNet(source).Unwrap().AddrPort()
 			if !address.IsValid() {
 				return 0, nil
 			}
 			sizes[0] = size
 			endpoints[0] = &clientEndpoint{
 				StdNetEndpoint: conn.StdNetEndpoint{AddrPort: address},
-				fromListener:   !destination.address.IsValid(),
+				bindAddress:    destination.address,
 			}
 			return 1, nil
 		}
@@ -149,9 +147,6 @@ func (c *clientBind) receive(ctx context.Context, destination *clientBindDestina
 	case <-ctx.Done():
 		return 0, net.ErrClosed
 	case <-timer.C:
-	}
-	if c.pauseManager != nil {
-		c.pauseManager.WaitActiveContext(ctx)
 	}
 	if ctx.Err() != nil {
 		return 0, net.ErrClosed
@@ -193,12 +188,8 @@ func (c *clientBind) Send(packets [][]byte, endpoint conn.Endpoint) error {
 	if session == nil {
 		return net.ErrClosed
 	}
-	address := remote.AddrPort
-	if remote.fromListener {
-		// Reply on the same unconnected socket, even if a peer shares this address.
-		address = netip.AddrPort{}
-	}
-	destination := session.destinations[address]
+	// Reply through the same detour socket, even when the peer's address changes.
+	destination := session.destinations[remote.bindAddress]
 	if destination == nil {
 		return E.New("no AmneziaWG detour socket for ", remote.AddrPort)
 	}
@@ -223,7 +214,7 @@ func (*clientBind) ParseEndpoint(value string) (conn.Endpoint, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &clientEndpoint{StdNetEndpoint: conn.StdNetEndpoint{AddrPort: address}}, nil
+	return &clientEndpoint{StdNetEndpoint: conn.StdNetEndpoint{AddrPort: address}, bindAddress: address}, nil
 }
 
 func (*clientBind) BatchSize() int { return 1 }

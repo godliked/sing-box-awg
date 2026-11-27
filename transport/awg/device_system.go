@@ -2,7 +2,6 @@ package awg
 
 import (
 	"context"
-	"errors"
 	"net"
 	"net/netip"
 	"os"
@@ -169,7 +168,7 @@ func (w *systemDevice) readSystemTUN() {
 			return
 		case <-w.readConsumed:
 		}
-		if err != nil && !errors.Is(err, awgTun.ErrTooManySegments) {
+		if err != nil {
 			return
 		}
 	}
@@ -184,9 +183,6 @@ func (w *systemDevice) readSystemBatch(bufs [][]byte, sizes []int) (count int, e
 			sizes[0] = max(0, sizes[0]-tun.PacketOffset)
 			count = 1
 		}
-	}
-	if errors.Is(err, tun.ErrTooManySegments) {
-		err = awgTun.ErrTooManySegments
 	}
 	return
 }

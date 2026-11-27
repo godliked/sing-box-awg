@@ -54,4 +54,4 @@ Set these optional fields at the endpoint level. Omitted fields use the AmneziaW
 | `random_trailers`, `disable_cookies` | Boolean | Enable random trailers or disable handshake cookies, respectively. |
 
 Peer hostnames use the configured dialer DNS resolver. AWG selects the first resolved IP at startup and bypasses the DNS cache on network changes.
-With a detour, AWG opens a UDP connection to each configured peer address. Peers with no configured address require a detour that supports receiving packets from arbitrary addresses.
+With a detour, AWG opens a UDP packet listener for each configured peer address. This lets authenticated peers reply from a different address when the detour supports it. AWG falls back to connected UDP for configured peers if it cannot open a packet listener. Peers with no configured address require a detour that supports receiving packets from arbitrary addresses.

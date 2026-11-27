@@ -206,7 +206,7 @@ func (w *Endpoint) DetachReturn(returnPath tun.Return) error {
 
 func (w *Endpoint) JudgeFlow(network uint8, source netip.AddrPort, destination netip.AddrPort, firstPacket []byte) tun.FlowVerdict {
 	for _, localPrefix := range w.localAddresses {
-		if localPrefix.Contains(destination.Addr()) {
+		if destination.Addr() == localPrefix.Addr() {
 			return tun.FlowVerdict{Action: tun.ActionAccept}
 		}
 	}
@@ -239,7 +239,7 @@ func (w *Endpoint) NewConnectionEx(ctx context.Context, conn net.Conn, source M.
 	metadata.InboundType = w.Type()
 	metadata.Source = source
 	for _, localPrefix := range w.localAddresses {
-		if localPrefix.Contains(destination.Addr) {
+		if destination.Addr == localPrefix.Addr() {
 			metadata.OriginDestination = destination
 			if destination.Addr.Is4() {
 				destination.Addr = netip.AddrFrom4([4]uint8{127, 0, 0, 1})
@@ -262,7 +262,7 @@ func (w *Endpoint) NewPacketConnectionEx(ctx context.Context, conn N.PacketConn,
 	metadata.Source = source
 	metadata.Destination = destination
 	for _, localPrefix := range w.localAddresses {
-		if localPrefix.Contains(destination.Addr) {
+		if destination.Addr == localPrefix.Addr() {
 			metadata.OriginDestination = destination
 			if destination.Addr.Is4() {
 				metadata.Destination.Addr = netip.AddrFrom4([4]uint8{127, 0, 0, 1})
@@ -270,6 +270,7 @@ func (w *Endpoint) NewPacketConnectionEx(ctx context.Context, conn N.PacketConn,
 				metadata.Destination.Addr = netip.IPv6Loopback()
 			}
 			conn = bufio.NewNATPacketConn(bufio.NewNetPacketConn(conn), metadata.OriginDestination, metadata.Destination)
+			break
 		}
 	}
 	w.logger.InfoContext(ctx, "inbound packet connection from ", source)
